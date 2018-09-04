@@ -201,19 +201,18 @@ public class TupleDesc implements Serializable {
 
     /**
      * Returns a String describing this descriptor. It should be of the form
-     * "fieldType[0](fieldName[0]), ..., fieldType[M](fieldName[M])".
+     * "fieldName[0](fieldType[0]), ..., fieldName[M](fieldType[M])".
      *
      * @return String describing this descriptor.
      */
     public String toString() {
-        String result = "";
+        StringBuilder result = new StringBuilder();
         Iterator<TDItem> iterator = iterator();
         while (iterator.hasNext()){
             TDItem item = iterator.next();
-            result += (item.fieldName + "(" + item.fieldType + ")" + ", ");
+            result.append(item.fieldName).append("(").append(item.fieldType).append(")").append(", ");
         }
-        result = result.substring(0, result.length()-2);
-        return result;
+        return result.substring(0, result.length() - 2);
     }
 
     /**

@@ -25,6 +25,9 @@ import java.util.NoSuchElementException;
 public class Tuple implements Serializable {
 
     private static final long serialVersionUID = 1L;
+    private TupleDesc td;
+    private Field[] fields;
+    private int numField = 0;
 
     /**
      * Create a new tuple with the specified schema (type).
@@ -32,14 +35,16 @@ public class Tuple implements Serializable {
      * @param td the schema of this tuple. It must be a valid TupleDesc instance with at least one field.
      */
     public Tuple(TupleDesc td) {
-        throw new UnsupportedOperationException("implement me!");
+        this.td = td;
+        numField = td.numFields();
+        fields = new Field[numField];
     }
 
     /**
      * @return The TupleDesc representing the schema of this tuple.
      */
     public TupleDesc getTupleDesc() {
-        throw new UnsupportedOperationException("implement me!");
+        return td;
     }
 
     /**
@@ -51,7 +56,11 @@ public class Tuple implements Serializable {
      * @throws NoSuchElementException if i is not a valid field reference.
      */
     public void setField(int i, Field f) {
-        throw new UnsupportedOperationException("implement me!");
+        if(!f.getType().equals(td.getFieldType(i)))
+            throw new RuntimeException("wrong field type!");
+        if(i < 0 || i >= numField)
+            throw new NoSuchElementException("field index out of range: " + i);
+        fields[i] = f;
     }
 
     /**
@@ -60,19 +69,27 @@ public class Tuple implements Serializable {
      * @throws NoSuchElementException if i is not a valid field reference.
      */
     public Field getField(int i) {
-        throw new UnsupportedOperationException("implement me!");
+        if(i < 0 || i >= numField)
+            throw new NoSuchElementException("field index out of range: " + i);
+        return fields[i];
     }
 
     /**
      * Returns the contents of this Tuple as a string. Note that to pass the
      * system tests, the format needs to be as follows:
      * <p>
-     * column1\tcolumn2\tcolumn3\t...\tcolumnN\n
+     * column1\tcolumn2\tcolumn3\t...\tcolumnN
      * <p>
      * where \t is a tab and \n is a newline
      */
     public String toString() {
-        throw new UnsupportedOperationException("implement me!");
+        StringBuilder result = new StringBuilder();
+        Iterator<Field> iterator = fields();
+        while (iterator.hasNext()){
+            Field f = iterator.next();
+            result.append(f.toString()).append("\t");
+        }
+        return result.substring(0, result.length()-1);
     }
 
 
@@ -80,8 +97,7 @@ public class Tuple implements Serializable {
      * @return An iterator which iterates over all the fields of this tuple
      */
     public Iterator<Field> fields() {
-        // hint: use java.util.Arrays.asList to convert array into a list, then return list iterator.
-        throw new UnsupportedOperationException("implement me!");
+        return Arrays.asList(fields).iterator();
     }
 
     /**
