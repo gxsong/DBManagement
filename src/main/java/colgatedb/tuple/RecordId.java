@@ -1,5 +1,6 @@
 package colgatedb.tuple;
 
+import colgatedb.page.Page;
 import colgatedb.page.PageId;
 
 import java.io.Serializable;
@@ -23,6 +24,8 @@ import java.io.Serializable;
 public class RecordId implements Serializable {
 
     private static final long serialVersionUID = 1L;
+    private PageId pid;
+    private int tupleno;
 
     /**
      * Creates a new RecordId referring to the specified PageId and tuple
@@ -34,24 +37,22 @@ public class RecordId implements Serializable {
      *            the tuple number within the page.
      */
     public RecordId(PageId pid, int tupleno) {
-         // you do not need to implement for lab 1
-        throw new UnsupportedOperationException("implement me!");
+        this.pid = pid;
+        this.tupleno = tupleno;
     }
 
     /**
      * @return the tuple number this RecordId references.
      */
     public int tupleno() {
-         // you do not need to implement for lab 1
-        throw new UnsupportedOperationException("implement me!");
+         return tupleno;
     }
 
     /**
      * @return the page id this RecordId references.
      */
     public PageId getPageId() {
-         // you do not need to implement for lab 1
-        throw new UnsupportedOperationException("implement me!");
+         return pid;
     }
 
     /**
@@ -62,8 +63,12 @@ public class RecordId implements Serializable {
      */
     @Override
     public boolean equals(Object o) {
-         // you do not need to implement for lab 1
-        throw new UnsupportedOperationException("implement me!");
+        if(o == null || !(o instanceof  RecordId))
+            return false;
+        if(o == this)
+            return true;
+        RecordId other = (RecordId) o;
+        return this.pid.equals(other.getPageId()) && this.tupleno == other.tupleno();
     }
 
     /**
@@ -77,9 +82,7 @@ public class RecordId implements Serializable {
      */
     @Override
     public int hashCode() {
-         // you do not need to implement for lab 1
-        throw new UnsupportedOperationException("implement me!");
-
+        return this.pid.hashCode() + (int) Math.pow(this.tupleno, 2);
     }
 
 }

@@ -28,6 +28,7 @@ public class Tuple implements Serializable {
     private TupleDesc td;
     private Field[] fields;
     private int numField = 0;
+    private RecordId rid;
 
     /**
      * Create a new tuple with the specified schema (type).
@@ -104,8 +105,7 @@ public class Tuple implements Serializable {
      * @return The RecordId representing the location of this tuple on disk. May be null.
      */
     public RecordId getRecordId() {
-         // you do not need to implement for lab 1
-        throw new UnsupportedOperationException("implement me!");
+        return this.rid;
     }
 
     /**
@@ -114,7 +114,6 @@ public class Tuple implements Serializable {
      * @param rid the new RecordId for this tuple.
      */
     public void setRecordId(RecordId rid) {
-         // you do not need to implement for lab 1
-        throw new UnsupportedOperationException("implement me!");
+         this.rid = rid;
     }
 }
