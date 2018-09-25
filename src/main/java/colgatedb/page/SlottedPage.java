@@ -56,10 +56,10 @@ public class SlottedPage implements Page {
         this.pid = pid;
         this.td = td;
         this.pageSize = pageSize;
-        this.numSlots = pageSize/td.getSize();
+        this.numSlots = SlottedPageFormatter.computePageCapacity(pageSize, td);
         slots = new Tuple[numSlots];
         header = new BitSet(numSlots);
-        setBeforeImage();  // used for logging, leave this line at end of constructor
+        //setBeforeImage();  // used for logging, leave this line at end of constructor
     }
 
     /**
@@ -176,8 +176,8 @@ public class SlottedPage implements Page {
         if(!header.get(t.getRecordId().tupleno()))
             throw  new PageException("This tuple has already been deleted");
         header.set(t.getRecordId().tupleno(), false);
+        t.setRecordId(null);
     }
-
 
     /**
      * Creates an iterator over the (non-empty) slots of the page.
@@ -190,7 +190,7 @@ public class SlottedPage implements Page {
     }
 
     class SlottedPageIterator implements Iterator<Tuple>{
-        int currInd = 0;
+        int currInd = header.nextSetBit(0);
         @Override
         public boolean hasNext() {
             return  currInd >= 0 && currInd < numSlots;
@@ -214,7 +214,7 @@ public class SlottedPage implements Page {
 
     @Override
     public byte[] getPageData() {
-         return new byte[1];  // this will need to be fixed later
+         return SlottedPageFormatter.pageToBytes(this, this.td, this.pageSize);
     }
 
     /**
@@ -222,7 +222,7 @@ public class SlottedPage implements Page {
      * @param data
      */
     private void setPageData(byte[] data) {
-         // this will be filled in later...
+         SlottedPageFormatter.bytesToPage(data, this, this.td);
     }
 
     @Override

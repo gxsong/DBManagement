@@ -41,6 +41,7 @@ public class Tuple implements Serializable {
         fields = new Field[numField];
     }
 
+
     /**
      * @return The TupleDesc representing the schema of this tuple.
      */
