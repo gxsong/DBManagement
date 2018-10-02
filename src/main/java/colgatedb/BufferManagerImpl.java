@@ -22,7 +22,9 @@ import java.util.Set;
  * course at Colgate.  If this file contains remnants from SimpleDB, we are
  * grateful for Sam's permission to use and adapt his materials.
  */
-public class BufferManagerImpl implements BufferManager {
+public class
+
+BufferManagerImpl implements BufferManager {
 
     private int capacity;
     private int occupancy = 0;
