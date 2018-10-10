@@ -1,10 +1,12 @@
 package colgatedb.dbfile;
 
+import colgatedb.BufferManager;
 import colgatedb.Database;
 import colgatedb.DbException;
 import colgatedb.page.*;
 import colgatedb.transactions.TransactionAbortedException;
 import colgatedb.transactions.TransactionId;
+import colgatedb.tuple.RecordId;
 import colgatedb.tuple.Tuple;
 import colgatedb.tuple.TupleDesc;
 
@@ -38,6 +40,11 @@ import java.util.NoSuchElementException;
 public class HeapFile implements DbFile {
 
     private final SlottedPageMaker pageMaker;   // this should be initialized in constructor
+    private TupleDesc td;
+    private int pageSize;
+    private int tableId;
+    private int numPages;
+    private BufferManager bm;
 
     /**
      * Creates a heap file.
@@ -47,35 +54,73 @@ public class HeapFile implements DbFile {
      * @param numPages size of this heapfile (i.e., number of pages already stored on disk)
      */
     public HeapFile(TupleDesc td, int pageSize, int tableid, int numPages) {
-        throw new UnsupportedOperationException("implement me!");
+        this.tableId = tableid;
+        this.td = td;
+        this.pageSize = pageSize;
+        this.numPages = numPages;
+        this.pageMaker = new SlottedPageMaker(td, pageSize);
+        this.bm = Database.getBufferManager();
     }
 
     /**
      * Returns the number of pages in this HeapFile.
      */
     public int numPages() {
-        throw new UnsupportedOperationException("implement me!");
+        return this.numPages;
     }
 
     @Override
     public int getId() {
-        throw new UnsupportedOperationException("implement me!");
+        return this.tableId;
     }
 
     @Override
     public TupleDesc getTupleDesc() {
-        throw new UnsupportedOperationException("implement me!");
+        return this.td;
     }
 
     @Override
     public void insertTuple(TransactionId tid, Tuple t) throws TransactionAbortedException {
-        throw new UnsupportedOperationException("implement me!");
+        PageId pid = null;
+        SlottedPage page = null;
+        boolean foundPage = false;
+        if(numPages > 0) {
+            for(int i = 0; i < numPages; i++) { //find a page that has empty slots
+                pid = new SimplePageId(tableId, i);
+                page = (SlottedPage) bm.pinPage(pid, pageMaker);
+                if (page.getNumEmptySlots() != 0) {
+                    foundPage = true;
+                }
+                bm.unpinPage(pid, false);
+                if (foundPage){
+                    break;
+                }
+            }
+        }
+        if (!foundPage) { //if there's no page or all pages are full, allocate new page
+            pid = new SimplePageId(tableId, numPages++);
+            bm.allocatePage(pid);
+        }
+        page = (SlottedPage) bm.pinPage(pid, pageMaker);
+        page.insertTuple(t);
+        bm.unpinPage(pid, true);
     }
+
+
 
 
     @Override
     public void deleteTuple(TransactionId tid, Tuple t) throws TransactionAbortedException {
-        throw new UnsupportedOperationException("implement me!");
+        PageId tuplePid = t.getRecordId().getPageId();
+        if (tuplePid.getTableId() != tableId
+                || tuplePid.pageNumber() >= numPages
+                || tuplePid.pageNumber() < 0) {
+            throw new DbException("Tuple " + t + "is not in files");
+        }
+        SlottedPage page = (SlottedPage)bm.pinPage(tuplePid, pageMaker);
+        page.deleteTuple(t);
+        bm.unpinPage(tuplePid, true);
+        t.setRecordId(null);
     }
 
     @Override
@@ -87,34 +132,93 @@ public class HeapFile implements DbFile {
      * @see DbFileIterator
      */
     private class HeapFileIterator implements DbFileIterator {
+        private int currPageNo;
+        private Iterator<Tuple> pageIterator;
+        private boolean isOpen;
 
         public HeapFileIterator(TransactionId tid) {
-            throw new UnsupportedOperationException("implement me!");
+            currPageNo = 0;
         }
 
         @Override
         public void open() throws TransactionAbortedException {
-            throw new UnsupportedOperationException("implement me!");
+            if (currPageNo < numPages) {
+                SimplePageId pid = new SimplePageId(tableId, currPageNo);
+                pageIterator = ((SlottedPage) bm.pinPage(pid, pageMaker)).iterator();
+                bm.unpinPage(pid, false);
+            }
+            isOpen = true;
+        }
+
+        /**
+         * @return the page number of the next page that has empty slots. if all slots are full, return numPages.
+         */
+
+        private int nextNonFullPageNo() {
+            int pageNo = currPageNo+1;
+            SimplePageId nextPageId;
+            SlottedPage page;
+            boolean foundPage = false;
+            while (pageNo < numPages) {
+                nextPageId = new SimplePageId(tableId, pageNo);
+                page = (SlottedPage) bm.pinPage(nextPageId, pageMaker);
+                if (page.iterator().hasNext()) {
+                    foundPage = true;
+                }
+                bm.unpinPage(nextPageId, false);
+                if (foundPage) {
+                    break;
+                }
+                pageNo++;
+            }
+            return pageNo;
         }
 
         @Override
         public boolean hasNext() throws TransactionAbortedException {
-            throw new UnsupportedOperationException("implement me!");
+            if (!isOpen) {
+                return false;
+            }
+            if (pageIterator == null) {
+                return false;
+            }
+            if (pageIterator.hasNext()) { //if current page has next tuple, return true
+                return true;
+            }
+            //else check if following pages have available tuples
+            int nextPageNo = nextNonFullPageNo();
+            return nextPageNo >= 0 && nextPageNo < numPages;
         }
 
         @Override
         public Tuple next() throws TransactionAbortedException, NoSuchElementException {
-            throw new UnsupportedOperationException("implement me!");
+            if (!isOpen) {
+                return null;
+            }
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            if (pageIterator.hasNext()) { //if current page has more tuple, get the next tuple on current page
+                return pageIterator.next();
+            }
+            //else, get the next tuple on the next page
+            currPageNo = nextNonFullPageNo();
+            SimplePageId pid = new SimplePageId(tableId, currPageNo);
+            pageIterator = ((SlottedPage)bm.pinPage(pid, pageMaker)).iterator();
+            Tuple t = pageIterator.next();
+            bm.unpinPage(pid, false);
+            return t;
         }
 
         @Override
         public void rewind() throws TransactionAbortedException {
-            throw new UnsupportedOperationException("implement me!");
+            currPageNo = 0;
+            open();
         }
 
         @Override
         public void close() {
-            throw new UnsupportedOperationException("implement me!");
+            isOpen = false;
         }
     }
 
