@@ -186,8 +186,16 @@ public class HeapFile implements DbFile {
                 return true;
             }
             //else check if following pages have available tuples
-            int nextPageNo = nextNonFullPageNo();
-            return nextPageNo >= 0 && nextPageNo < numPages;
+            currPageNo = nextNonFullPageNo();
+            if(currPageNo >= 0 && currPageNo < numPages) {
+                SimplePageId pid = new SimplePageId(tableId, currPageNo);
+                pageIterator = ((SlottedPage) bm.pinPage(pid, pageMaker)).iterator();
+                bm.unpinPage(pid, false);
+                return true;
+            }
+            else {
+                return false;
+            }
         }
 
         @Override
@@ -198,16 +206,7 @@ public class HeapFile implements DbFile {
             if (!hasNext()) {
                 throw new NoSuchElementException();
             }
-            if (pageIterator.hasNext()) { //if current page has more tuple, get the next tuple on current page
-                return pageIterator.next();
-            }
-            //else, get the next tuple on the next page
-            currPageNo = nextNonFullPageNo();
-            SimplePageId pid = new SimplePageId(tableId, currPageNo);
-            pageIterator = ((SlottedPage)bm.pinPage(pid, pageMaker)).iterator();
-            Tuple t = pageIterator.next();
-            bm.unpinPage(pid, false);
-            return t;
+            return pageIterator.next();
         }
 
         @Override
