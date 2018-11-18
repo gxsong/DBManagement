@@ -23,32 +23,58 @@ import static colgatedb.transactions.Permissions.READ_WRITE;
  */
 public class LockManagerImpl implements LockManager {
     private HashMap<PageId, LockTableEntry> lockTable;
-
+    private Graph graph;
 
     public LockManagerImpl() {
         lockTable = new HashMap<>();
+        graph = new Graph();
     }
 
     @Override
     public void acquireLock(TransactionId tid, PageId pid, Permissions perm) throws TransactionAbortedException {
         boolean waiting = true;
-        boolean inqueue = false;
-        if(!holdsLock(tid, pid, perm)) { //this transcation does not hold lock on this object
+        boolean grant = false;
+        synchronized (this) {
+        LockTableEntry tableEntry = lockTable.get(pid);
+        if(tableEntry == null){
+            tableEntry = new LockTableEntry();
+            lockTable.put(pid, tableEntry);
+        }
+        if(!holdsLock(tid, pid, perm)) { //if this transcation does not hold requested lock on this object
+            tableEntry.addToQueue(tid, perm, holdsLock(tid, pid, READ_ONLY) && perm == READ_WRITE);
             while (waiting) {
-                synchronized (this) {
-                    LockTableEntry tableEntry = lockTable.get(pid);
-                    if(tableEntry == null){
-                        tableEntry = new LockTableEntry();
-                        lockTable.put(pid, tableEntry);
+                    if(perm == READ_ONLY){ //if requesting shared lock
+                        if(tableEntry.isExclusive() && !holdsLock(tid, pid, READ_ONLY)){ //if this object is not exclusively held
+                            TransactionId holder = tableEntry.lockHolders.iterator().next();
+                            if (deadlockPrevention(tid, holder)) { //abort using wait-die if deadlock detected
+                                tableEntry.pollFromQueue();
+                                throw new TransactionAbortedException();
+                            }
+                        }
+                        else grant = true;
                     }
 
-                    if ((perm == READ_ONLY           //if requesting shared lock, should grant lock if
-                            && !tableEntry.isExclusive()) // this lock is not exclusively used
-
-                        ||(perm == Permissions.READ_WRITE   //if requesting exclusive, should grant lock if
-                            && ((!tableEntry.isUsed() && (tableEntry.atFront(tid, perm)) //the lock is unused and this request is at front of queue
-                                || holdsLock(tid, pid, READ_ONLY))))){ // or if it is an upgrade request
-
+                    else { //if requesting exclusive lock
+                        if(tableEntry.isUsed()){ //if this object is locked
+                            if(tableEntry.lockHolders.size() == 1 && holdsLock(tid, pid, READ_ONLY)){ //if it is an upgrade request and nobody else is holding this lock
+                                grant = true;
+                            }
+                            else {
+                                //if deadlock detected, abort using wait-die
+                                for (TransactionId holder : tableEntry.lockHolders) {
+                                    graph.addEdge(tid, holder);
+                                    if (deadlockPrevention(tid, holder)) {
+                                        tableEntry.pollFromQueue();
+                                        throw new TransactionAbortedException();
+                                    }
+                                }
+                            }
+                        }
+                        else if(tableEntry.atFront(tid, perm)){ //if this request is at the front of queue
+                            grant = true;
+                        }
+                    }
+                    if(grant){
                         if (perm == Permissions.READ_WRITE) {  //clear other holders if this txn is granted exclusive lock
                             tableEntry.lockHolders.clear();
                         }
@@ -56,21 +82,38 @@ public class LockManagerImpl implements LockManager {
                         tableEntry.addHolder(tid);
                         tableEntry.setLockType(perm);
                         tableEntry.pollFromQueue();
+                        graph.addNode(tid);
+                        for(TransactionId older: tableEntry.lockHolders){
+                            graph.removeEdge(tid, older);
+                        }
                         waiting = false;
                     }
                     else {
-                        if(!inqueue) {
-                            tableEntry.addToQueue(tid, perm, holdsLock(tid, pid, READ_ONLY)&&perm == READ_WRITE);
-                            inqueue = true;
-                        }
                         try {
                             wait();
-                        } catch (InterruptedException e) {}
+                        } catch (InterruptedException e) { }
                     }
                 }
             }
         }
 
+    }
+
+    /**
+     * add new edge to graph, detect cycle, abort using wait-die
+     * @param tid transaction issuing request
+     * @param holder lock holder
+     * @return true if current transaction is aborted
+     */
+    private synchronized boolean deadlockPrevention(TransactionId tid, TransactionId holder){
+        graph.addEdge(tid, holder);
+        if(graph.hasCycle()){
+            if(!graph.isOlder(tid, holder)){
+                graph.removeNode(tid);
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -93,11 +136,12 @@ public class LockManagerImpl implements LockManager {
             else {
                 tableEntry.setLockType(READ_ONLY);
             }
+            graph.removeNode(tid);
             notifyAll();
         }
 
         else{
-            throw new LockManagerException("lock is not held!!");
+            throw new LockManagerException(tid + " does not hold lock on " + pid);
         }
     }
 
@@ -204,4 +248,113 @@ public class LockManagerImpl implements LockManager {
 
         }
     }
+
+    static class Graph{
+        HashMap<TransactionId, Node> nodeMap;
+        HashMap<TransactionId, Set<TransactionId>> adjList;
+        int timestamp;
+
+        Graph (){
+            this.nodeMap = new HashMap<>();
+            this.adjList = new HashMap<>();
+            timestamp = 0;
+        }
+
+        void addNode(TransactionId tid){
+            if(nodeMap.putIfAbsent(tid, new Node(tid, timestamp)) == null){
+                timestamp++;
+            }
+        }
+
+        void addEdge(TransactionId tid1, TransactionId tid2) {
+            addNode(tid1);
+            addNode(tid2);
+            if(adjList.putIfAbsent(tid1, new HashSet<>(Arrays.asList(tid2))) == null){
+                adjList.get(tid1).add(tid2);
+            }
+        }
+
+        void removeEdge(TransactionId tid1, TransactionId tid2){
+            if(nodeMap.containsKey(tid1) && nodeMap.containsKey(tid2)){
+                if(adjList.containsKey(tid1)){
+                    adjList.get(tid1).remove(tid2);
+                }
+            }
+
+        }
+
+        void removeNode(TransactionId tid){
+            if(nodeMap.containsKey(tid)){
+                for (Set<TransactionId> nodes: adjList.values()){
+                    nodes.remove(tid);
+                }
+                adjList.remove(tid);
+                nodeMap.remove(tid);
+            }
+        }
+
+        void recolor(){
+            for(Node n: nodeMap.values()){
+                n.color = 0;
+            }
+        }
+
+        boolean hasCycle(){
+            recolor();
+            Node n;
+            for(TransactionId tid: adjList.keySet()){
+                n = nodeMap.get(tid);
+                if(n.color == 0){
+                    if(dfs(n)) return true;
+                }
+            }
+            return false;
+        }
+
+        boolean dfs(Node node){
+            Node c;
+            Set<TransactionId> children = adjList.get(node.tid);
+            if(children != null) {
+                node.color = 1;
+                for (TransactionId tid : children) {
+                    c = nodeMap.get(tid);
+                    if (c.color == 0) {
+                        if(dfs(c)){
+                            return true;
+                        }
+                    }
+                    else if (c.color == 1){
+                        return true;
+                    }
+                }
+            }
+            node.color = -1;
+            return false;
+        }
+
+        boolean isOlder(TransactionId tid1, TransactionId tid2) {
+            return (nodeMap.get(tid1).ts <= nodeMap.get(tid2).ts);
+        }
+
+
+        class Node {
+            TransactionId tid;
+            int ts;
+            int color; //-1 = black, 0 = white, 1 = grey
+            Node (TransactionId tid, int ts){
+                this.tid = tid;
+                this.ts = ts;
+                this.color = 0;
+            }
+        }
+        class Edge {
+            Node s;
+            Node t;
+            Edge (Node s, Node t){
+                this.s = s;
+                this.t = t;
+            }
+        }
+    }
+
 }
