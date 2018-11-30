@@ -1,9 +1,11 @@
 package colgatedb.dbfile;
 
+import colgatedb.AccessManager;
 import colgatedb.BufferManager;
 import colgatedb.Database;
 import colgatedb.DbException;
 import colgatedb.page.*;
+import colgatedb.transactions.Permissions;
 import colgatedb.transactions.TransactionAbortedException;
 import colgatedb.transactions.TransactionId;
 import colgatedb.tuple.RecordId;
@@ -44,7 +46,7 @@ public class HeapFile implements DbFile {
     private int pageSize;
     private int tableId;
     private int numPages;
-    private BufferManager bm;
+    private final AccessManager am;
 
     /**
      * Creates a heap file.
@@ -59,7 +61,7 @@ public class HeapFile implements DbFile {
         this.pageSize = pageSize;
         this.numPages = numPages;
         this.pageMaker = new SlottedPageMaker(td, pageSize);
-        this.bm = Database.getBufferManager();
+        this.am = Database.getAccessManager();
     }
 
     /**
@@ -87,23 +89,28 @@ public class HeapFile implements DbFile {
         if(numPages > 0) {
             for(int i = 0; i < numPages; i++) { //find a page that has empty slots
                 pid = new SimplePageId(tableId, i);
-                page = (SlottedPage) bm.pinPage(pid, pageMaker);
+                am.acquireLock(tid, pid, Permissions.READ_ONLY);
+                page = (SlottedPage) am.pinPage(tid, pid, pageMaker);
                 if (page.getNumEmptySlots() != 0) {
                     foundPage = true;
-                }
-                bm.unpinPage(pid, false);
-                if (foundPage){
                     break;
+                }
+                else {
+                    am.unpinPage(tid, page, false);
+                    am.releaseLock(tid, pid);
                 }
             }
         }
         if (!foundPage) { //if there's no page or all pages are full, allocate new page
-            pid = new SimplePageId(tableId, numPages++);
-            bm.allocatePage(pid);
+            synchronized (this) {
+                pid = new SimplePageId(tableId, numPages++);
+                am.allocatePage(pid);
+                am.acquireLock(tid, pid, Permissions.READ_ONLY);
+                page = (SlottedPage) am.pinPage(tid, pid, pageMaker);
+            }
         }
-        page = (SlottedPage) bm.pinPage(pid, pageMaker);
         page.insertTuple(t);
-        bm.unpinPage(pid, true);
+        am.unpinPage(tid, page, true);
     }
 
 
@@ -117,9 +124,10 @@ public class HeapFile implements DbFile {
                 || tuplePid.pageNumber() < 0) {
             throw new DbException("Tuple " + t + "is not in files");
         }
-        SlottedPage page = (SlottedPage)bm.pinPage(tuplePid, pageMaker);
+        am.acquireLock(tid, tuplePid, Permissions.READ_WRITE);
+        SlottedPage page = (SlottedPage)am.pinPage(tid, tuplePid, pageMaker);
         page.deleteTuple(t);
-        bm.unpinPage(tuplePid, true);
+        am.unpinPage(tid, page, true);
         t.setRecordId(null);
     }
 
@@ -135,8 +143,10 @@ public class HeapFile implements DbFile {
         private int currPageNo;
         private Iterator<Tuple> pageIterator;
         private boolean isOpen;
+        private TransactionId tid;
 
         public HeapFileIterator(TransactionId tid) {
+            this.tid = tid;
             currPageNo = 0;
         }
 
@@ -144,8 +154,10 @@ public class HeapFile implements DbFile {
         public void open() throws TransactionAbortedException {
             if (currPageNo < numPages) {
                 SimplePageId pid = new SimplePageId(tableId, currPageNo);
-                pageIterator = ((SlottedPage) bm.pinPage(pid, pageMaker)).iterator();
-                bm.unpinPage(pid, false);
+                am.acquireLock(tid, pid, Permissions.READ_ONLY);
+                Page page = am.pinPage(tid, pid, pageMaker);
+                pageIterator = ((SlottedPage) page).iterator();
+                am.unpinPage(tid, page,false);
             }
             isOpen = true;
         }
@@ -154,18 +166,19 @@ public class HeapFile implements DbFile {
          * @return the page number of the next page that has empty slots. if all slots are full, return numPages.
          */
 
-        private int nextNonFullPageNo() {
+        private int nextNonFullPageNo() throws TransactionAbortedException {
             int pageNo = currPageNo+1;
             SimplePageId nextPageId;
             SlottedPage page;
             boolean foundPage = false;
             while (pageNo < numPages) {
                 nextPageId = new SimplePageId(tableId, pageNo);
-                page = (SlottedPage) bm.pinPage(nextPageId, pageMaker);
+                am.acquireLock(tid, nextPageId, Permissions.READ_ONLY);
+                page = (SlottedPage) am.pinPage(tid, nextPageId, pageMaker);
                 if (page.iterator().hasNext()) {
                     foundPage = true;
                 }
-                bm.unpinPage(nextPageId, false);
+                am.unpinPage(tid, page, false);
                 if (foundPage) {
                     break;
                 }
@@ -188,9 +201,11 @@ public class HeapFile implements DbFile {
             //else check if following pages have available tuples
             currPageNo = nextNonFullPageNo();
             if(currPageNo >= 0 && currPageNo < numPages) {
-                SimplePageId pid = new SimplePageId(tableId, currPageNo);
-                pageIterator = ((SlottedPage) bm.pinPage(pid, pageMaker)).iterator();
-                bm.unpinPage(pid, false);
+                PageId pid = new SimplePageId(tableId, currPageNo);
+                am.acquireLock(tid, pid, Permissions.READ_ONLY);
+                Page page = am.pinPage(tid, pid, pageMaker);
+                pageIterator = ((SlottedPage)page).iterator();
+                am.unpinPage(tid, page, false);
                 return true;
             }
             else {
