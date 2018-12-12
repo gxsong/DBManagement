@@ -1,14 +1,21 @@
 package colgatedb.logging;
 
+import colgatedb.BufferManager;
 import colgatedb.Database;
 import colgatedb.page.Page;
 import colgatedb.page.PageId;
+import colgatedb.page.SlottedPage;
+import colgatedb.transactions.Transaction;
 import colgatedb.transactions.TransactionId;
 
+import javax.xml.crypto.Data;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.HashSet;
 import java.util.Set;
+
+import static colgatedb.logging.LogFileImpl.LONG_SIZE;
+import static colgatedb.logging.LogFileImpl.NO_CHECKPOINT_ID;
 
 /**
  * ColgateDB
@@ -97,6 +104,23 @@ public class LogFileRecovery {
     }
 
     /**
+     * Undo page write of given tid
+     * @param tid
+     * @throws IOException
+     */
+    private void undoUpdate(long tid) throws IOException{
+        Page beforeImg = LogFileImpl.readPageData(readOnlyLog);
+        LogFileImpl.readPageData(readOnlyLog);
+        Database.getDiskManager().writePage(beforeImg);
+        Database.getLogFile().logCLR(tid, beforeImg);
+        BufferManager bm = Database.getBufferManager();
+        PageId pid = beforeImg.getId();
+        if(bm.isDirty(pid)) {
+            bm.discardPage(pid);
+        }
+    }
+
+    /**
      * Rollback the specified transaction, setting the state of any
      * of pages it updated to their pre-updated state.  To preserve
      * transaction semantics, this should not be called on
@@ -110,7 +134,26 @@ public class LogFileRecovery {
      * @throws java.io.IOException if tidToRollback has already committed
      */
     public void rollback(TransactionId tidToRollback) throws IOException {
-         // this will be implemented in a later lab
+         readOnlyLog.seek(readOnlyLog.length() - LONG_SIZE);
+         long recordStart;
+         while (readOnlyLog.getFilePointer() > 0) {
+             recordStart = readOnlyLog.readLong();
+             readOnlyLog.seek(recordStart);
+             int type = readOnlyLog.readInt();
+             long tid = readOnlyLog.readLong();
+             if(tidToRollback.getId() == tid) {
+                 if (type == LogType.UPDATE_RECORD) {
+                     undoUpdate(tid);
+                 }
+                 else if(type == LogType.BEGIN_RECORD) {
+                     Database.getLogFile().logAbort(tidToRollback.getId());
+                 }
+                 else if(type == LogType.COMMIT_RECORD){
+                     throw new IOException("Transaction " + tid + " has already been commited!");
+                 }
+             }
+             readOnlyLog.seek(recordStart - LONG_SIZE);
+         }
     }
 
     /**
@@ -122,6 +165,67 @@ public class LogFileRecovery {
      * the BufferPool are locked.
      */
     public void recover() throws IOException {
-         // this will be implemented in a later lab
+        Set<Long> losers = new HashSet<>();
+        //read last checkpoint
+        readOnlyLog.seek(0);
+         long lastCheckPoint = readOnlyLog.readLong();
+         //populate losers
+         if(lastCheckPoint != NO_CHECKPOINT_ID){
+             readOnlyLog.seek(lastCheckPoint);
+             if(readOnlyLog.readInt() == LogType.CHECKPOINT_RECORD) {
+                 readOnlyLog.skipBytes(LogFileImpl.LONG_SIZE);
+                 int numActive = readOnlyLog.readInt();
+                 for (int i = 0; i < numActive; i++) {
+                     losers.add(readOnlyLog.readLong());
+                 }
+             }
+             readOnlyLog.skipBytes(LogFileImpl.LONG_SIZE);
+         }
+         //REDO
+         long recordStart = readOnlyLog.getFilePointer();
+         while (recordStart < readOnlyLog.length()){
+             int type = readOnlyLog.readInt();
+             long tid = readOnlyLog.readLong();
+             if(type == LogType.BEGIN_RECORD) {
+                 losers.add(tid);
+             }
+             else if(type == LogType.COMMIT_RECORD || type == LogType.ABORT_RECORD) {
+                 losers.remove(tid);
+             }
+             else if(type == LogType.UPDATE_RECORD) {
+                LogFileImpl.readPageData(readOnlyLog);
+                Page afterImage = LogFileImpl.readPageData(readOnlyLog);
+                Database.getDiskManager().writePage(afterImage);
+
+             }
+             else if(type == LogType.CLR_RECORD) {
+                 Page afterImage = LogFileImpl.readPageData(readOnlyLog);
+                 Database.getDiskManager().writePage(afterImage);
+             }
+             readOnlyLog.skipBytes(LogFileImpl.LONG_SIZE);
+             recordStart = readOnlyLog.getFilePointer();
+         }
+         //UNDO
+        readOnlyLog.seek(readOnlyLog.length() - LONG_SIZE);
+
+        while (readOnlyLog.getFilePointer() > 0) {
+            recordStart = readOnlyLog.readLong();
+            readOnlyLog.seek(recordStart);
+            int type = readOnlyLog.readInt();
+            long tid = readOnlyLog.readLong();
+            if(losers.contains(tid)) {  //if this txn is a loser
+                if (type == LogType.UPDATE_RECORD) {
+                    undoUpdate(tid);
+                }
+                else if(type == LogType.BEGIN_RECORD) {
+                    Database.getLogFile().logAbort(tid);
+                    losers.remove(tid);
+                    if(losers.isEmpty()) {
+                        break;
+                    }
+                }
+            }
+            readOnlyLog.seek(recordStart - LONG_SIZE);
+        }
     }
 }

@@ -5,6 +5,7 @@ import colgatedb.page.PageId;
 import colgatedb.page.PageMaker;
 import colgatedb.transactions.*;
 
+import java.io.IOException;
 import java.util.*;
 
 /**
@@ -36,7 +37,7 @@ public class AccessManagerImpl implements AccessManager {
      */
     public AccessManagerImpl(BufferManager bm) {
         this.bm = bm;
-        bm.evictDirty(false);
+        //bm.evictDirty(false); --allow steal
         this.lm = new LockManagerImpl();
         this.pinMap = new HashMap<>();
     }
@@ -75,6 +76,12 @@ public class AccessManagerImpl implements AccessManager {
             PageId pid = page.getId();
             pinMap.get(pid).unpinUpdate(tid, isDirty);
             bm.unpinPage(pid, isDirty);
+            if(isDirty) {
+                Database.getLogFile().logWrite(tid, page.getBeforeImage(), page);
+                if(force){
+                    Database.getLogFile().force();
+                }
+            }
         }
     }
 
@@ -92,22 +99,23 @@ public class AccessManagerImpl implements AccessManager {
 
     @Override
     public void transactionComplete(TransactionId tid, boolean commit) {
+        if(force) {
+            Database.getLogFile().force();
+        }
         for(PageId pid: pinMap.keySet()){
             pinEntry entry = pinMap.get(pid);
-            if(entry.isPinnedBy(tid)) {
-                int pinCount = entry.tidCountMap.get(tid);
-                if (pinMap.get(pid).removeTid(tid)) { //if page is dirtied by this transaction
-                    if (commit) {
-                        bm.flushPage(pid);
-                    }
-                    else {
-                        bm.discardPage(pid);
-                    }
+            int pinCount = entry.tidCountMap.get(tid);
+            if (pinMap.get(pid).removeTid(tid)) { //if page is dirtied by this transaction
+                if (commit) {
+                    bm.flushPage(pid);
+                    bm.getPage(pid).setBeforeImage();
                 }
-                for(int i = 0; i < pinCount; i++){
-                    bm.unpinPage(pid, false);
+                else {
+                    bm.discardPage(pid);
                 }
-
+            }
+            for(int i = 0; i < pinCount; i++){
+                bm.unpinPage(pid, false);
             }
         }
         for(PageId pid: lm.getPagesForTid(tid)){
@@ -157,8 +165,7 @@ public class AccessManagerImpl implements AccessManager {
 
     @Override
     public void setForce(boolean force) {
-        // you do NOT need to implement this for lab10.  this will be changed in a later lab.
-        throw new UnsupportedOperationException("implement me!");
+        this.force = force;
     }
 
 }
